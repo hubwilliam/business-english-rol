@@ -412,7 +412,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
         <div class="audio-top">
           <div>
             <div class="audio-label">🎙 Listen to the article</div>
-            <div class="audio-note">Pause now genuinely pauses the current speech. Resume continues from the same point.</div>
+            <div class="audio-note">Natural paragraph playback. Gender is strictly matched; unavailable voices are never substituted with the wrong gender.</div>
           </div>
           <div id="voiceName" class="voice-name">Voice: loading…</div>
         </div>
@@ -423,11 +423,10 @@ input[type=range]{width:100%;accent-color:var(--accent)}
           <button id="stopAudio" class="soft-btn">■ Stop</button>
           <select id="voiceSelect" title="Voice"></select>
           <select id="speedSelect" title="Speed">
-            <option value="0.85">0.85×</option>
-            <option value="0.95">0.95×</option>
-            <option value="1" selected>1.0×</option>
-            <option value="1.1">1.1×</option>
-            <option value="1.2">1.2×</option>
+            <option value="0.90">0.90×</option>
+            <option value="0.95" selected>0.95× · Natural</option>
+            <option value="1.00">1.00×</option>
+            <option value="1.05">1.05×</option>
           </select>
         </div>
 
@@ -581,95 +580,91 @@ const VOICE_PROFILES={
     label:'♀ American',
     fullLabel:'Female · American English',
     lang:'en-US',
-    gender:'female',
-    names:['Samantha','Ava','Allison','Susan','Zoe','Joelle','Stephanie','Aria','Jenny','Nicky','Siri Voice 2','Siri Voice 4']
+    // Strict female whitelist; never substitute an unverified voice.
+    names:['Samantha','Ava','Allison','Susan','Zoe','Joelle']
   },
   'male-us':{
     label:'♂ American',
     fullLabel:'Male · American English',
     lang:'en-US',
-    gender:'male',
-    names:['Alex','Aaron','Fred','Tom','Evan','Nathan','Reed','Rocko','Siri Voice 1','Siri Voice 3']
+    names:['Alex','Aaron','Tom','Fred','Evan','Nathan']
   },
   'female-uk':{
     label:'♀ British',
     fullLabel:'Female · British English',
     lang:'en-GB',
-    gender:'female',
-    names:['Serena','Kate','Martha','Libby','Sonia','Stephanie','Siri Voice 2','Siri Voice 4']
+    names:['Serena','Kate','Martha','Libby','Sonia']
   },
   'male-uk':{
     label:'♂ British',
     fullLabel:'Male · British English',
     lang:'en-GB',
-    gender:'male',
-    names:['Daniel','Arthur','Oliver','George','Ryan','Siri Voice 1','Siri Voice 3']
+    names:['Daniel','Arthur','Oliver','George','Ryan']
   },
   'female-in':{
     label:'♀ Indian',
     fullLabel:'Female · Indian English',
     lang:'en-IN',
-    gender:'female',
-    names:['Veena','Neerja','Heera','Lekha','Kalpana','Siri Voice 2','Siri Voice 4']
+    names:['Veena','Lekha','Heera','Kalpana']
   },
   'male-in':{
     label:'♂ Indian',
     fullLabel:'Male · Indian English',
     lang:'en-IN',
-    gender:'male',
-    names:['Rishi','Raj','Narendra','Prabhat','Siri Voice 1','Siri Voice 3']
+    names:['Rishi','Raj','Narendra','Prabhat']
   }
 };
 
 function normalizeLang(lang){
   return String(lang||'').replace('_','-').toLowerCase();
 }
-function localeMatch(voice,lang){
+function exactLocale(voice,lang){
   return normalizeLang(voice.lang)===normalizeLang(lang);
 }
-function nameScore(voice,names){
-  const n=String(voice.name||'').toLowerCase();
-  const idx=names.findIndex(name=>n.includes(name.toLowerCase()));
-  return idx===-1?999:idx;
+function qualityScore(voice){
+  const uri=String(voice.voiceURI||'').toLowerCase();
+  const name=String(voice.name||'').toLowerCase();
+  // If Safari happens to expose premium/enhanced metadata in the URI/name,
+  // prefer it, while staying within the same verified voice name + gender profile.
+  if(uri.includes('premium')||name.includes('premium'))return 30;
+  if(uri.includes('enhanced')||name.includes('enhanced'))return 20;
+  return 0;
 }
-function voiceForProfile(profileKey){
+function strictVoiceForProfile(profileKey){
   const p=VOICE_PROFILES[profileKey]||VOICE_PROFILES['female-us'];
-  const locale=voices.filter(v=>localeMatch(v,p.lang));
-
-  // First preference: known voice names associated with the requested gender/accent.
-  const named=locale
-    .map(v=>({v,score:nameScore(v,p.names)}))
-    .filter(x=>x.score<999)
-    .sort((a,b)=>a.score-b.score);
-  if(named.length)return {voice:named[0].v,exact:true};
-
-  // Browser SpeechSynthesisVoice does not expose gender. If a named match is
-  // unavailable, retain the requested accent and use the closest locale voice.
-  if(locale.length)return {voice:locale[0],exact:false};
-
-  // Last resort: use another English voice, clearly reported as fallback.
-  const english=voices.filter(v=>normalizeLang(v.lang).startsWith('en-'));
-  return {voice:english[0]||voices[0]||null,exact:false};
+  const candidates=voices
+    .filter(v=>exactLocale(v,p.lang))
+    .map(v=>{
+      const lname=String(v.name||'').toLowerCase();
+      const nameIndex=p.names.findIndex(n=>lname.includes(n.toLowerCase()));
+      return {v,nameIndex,quality:qualityScore(v)};
+    })
+    .filter(x=>x.nameIndex>=0)
+    .sort((a,b)=>{
+      if(b.quality!==a.quality)return b.quality-a.quality;
+      return a.nameIndex-b.nameIndex;
+    });
+  return candidates[0]?.v||null;
+}
+function profileAvailability(profileKey){
+  return !!strictVoiceForProfile(profileKey);
 }
 function profileStatus(profileKey){
   const p=VOICE_PROFILES[profileKey]||VOICE_PROFILES['female-us'];
-  const result=voiceForProfile(profileKey);
-  if(!result.voice)return `${p.fullLabel} · unavailable`;
-  return result.exact
-    ? `${p.fullLabel} · ${result.voice.name}`
-    : `${p.fullLabel} · closest available: ${result.voice.name}`;
+  const voice=strictVoiceForProfile(profileKey);
+  if(!voice)return `${p.fullLabel} · unavailable on this device`;
+  const q=qualityScore(voice)>=30?'Premium':qualityScore(voice)>=20?'Enhanced':'System';
+  return `${p.fullLabel} · ${voice.name} · ${q}`;
+}
+function firstAvailableProfile(){
+  const order=['female-us','male-us','female-uk','male-uk','female-in','male-in'];
+  return order.find(k=>profileAvailability(k))||null;
 }
 function refreshVoices(){
   voiceSelect.innerHTML='';
-  Object.entries(VOICE_PROFILES).forEach(([key,p])=>{
-    const o=document.createElement('option');
-    o.value=key;
-    o.textContent=p.label;
-    o.selected=key===selectedVoiceProfile;
-    voiceSelect.appendChild(o);
-  });
 
   if(!('speechSynthesis' in window)){
+    voiceSelect.innerHTML='<option>Speech unavailable</option>';
     voiceSelect.disabled=true;
     voiceName.textContent='Voice unavailable';
     return;
@@ -677,31 +672,65 @@ function refreshVoices(){
 
   voices=window.speechSynthesis.getVoices().filter(v=>normalizeLang(v.lang).startsWith('en-'));
 
-  // Female American English is the default on first use.
-  if(!VOICE_PROFILES[selectedVoiceProfile])selectedVoiceProfile='female-us';
-  voiceSelect.value=selectedVoiceProfile;
-  voiceName.textContent=`Voice: ${profileStatus(selectedVoiceProfile)}`;
+  // Default is strictly Female American. If that exact voice profile is not
+  // available, choose the first verified profile rather than mislabelling another voice.
+  if(!profileAvailability(selectedVoiceProfile)){
+    const fallback=selectedVoiceProfile==='female-us' ? firstAvailableProfile() : null;
+    if(fallback)selectedVoiceProfile=fallback;
+  }
+
+  Object.entries(VOICE_PROFILES).forEach(([key,p])=>{
+    const available=profileAvailability(key);
+    const o=document.createElement('option');
+    o.value=key;
+    o.textContent=available ? p.label : `${p.label} · unavailable`;
+    o.disabled=!available;
+    o.selected=key===selectedVoiceProfile&&available;
+    voiceSelect.appendChild(o);
+  });
+
+  const chosen=strictVoiceForProfile(selectedVoiceProfile);
+  if(chosen){
+    voiceSelect.disabled=false;
+    voiceSelect.value=selectedVoiceProfile;
+    localStorage.setItem('rol_voiceProfile',selectedVoiceProfile);
+    voiceName.textContent=`Voice: ${profileStatus(selectedVoiceProfile)}`;
+  }else{
+    voiceSelect.disabled=true;
+    voiceName.textContent='No verified natural English voice is exposed by Safari';
+  }
 }
 function selectedVoice(){
-  return voiceForProfile(selectedVoiceProfile).voice;
+  return strictVoiceForProfile(selectedVoiceProfile);
 }
 function selectedVoiceLanguage(){
   return (VOICE_PROFILES[selectedVoiceProfile]||VOICE_PROFILES['female-us']).lang;
 }
 function buildAudioModel(){
-  const sentences=fullArticleText().replace(/\s+/g,' ').split(/(?<=[.!?])\s+/).map(s=>s.trim()).filter(Boolean);
-  const rate=Number(speedSelect.value||1);
+  // Use full paragraphs instead of one utterance per sentence.
+  // This produces substantially more natural continuity and fewer robotic resets.
+  const chunks=lesson().paragraphs
+    .map(p=>p.join(' ').replace(/\s+/g,' ').trim())
+    .filter(Boolean);
+  const rate=Number(speedSelect.value||0.95);
   const durations=[];const cumulative=[0];let total=0;
-  sentences.forEach(s=>{
-    const words=(s.match(/[A-Za-z]+(?:['’-][A-Za-z]+)*/g)||[]).length;
-    const d=Math.max(1.6,(words/2.65)/rate);
+  chunks.forEach(chunk=>{
+    const words=(chunk.match(/[A-Za-z]+(?:['’-][A-Za-z]+)*/g)||[]).length;
+    const d=Math.max(4,(words/2.55)/rate);
     durations.push(d);total+=d;cumulative.push(total);
   });
-  audio.sentences=sentences;audio.durations=durations;audio.cumulative=cumulative;audio.total=total;
-  audio.currentTime=0;audio.sentenceIndex=0;audio.sentenceOffset=0;
-  audioTimeline.max=String(Math.max(1,total));audioTimeline.value='0';
-  audioNow.textContent='0:00';audioTotal.textContent=fmt(total);
-  audioStateText.textContent='Ready · timeline time is an estimate for synthesized speech.';
+  audio.sentences=chunks;
+  audio.durations=durations;
+  audio.cumulative=cumulative;
+  audio.total=total;
+  audio.currentTime=0;
+  audio.sentenceIndex=0;
+  audio.sentenceOffset=0;
+  audioTimeline.max=String(Math.max(1,total));
+  audioTimeline.value='0';
+  audioNow.textContent='0:00';
+  audioTotal.textContent=fmt(total);
+  audioStateText.textContent='Ready · natural paragraph playback · timeline is approximate.';
 }
 function sentenceAtTime(time){
   for(let i=0;i<audio.cumulative.length-1;i++){
@@ -746,8 +775,8 @@ function speakSentence(index,offset=0,session=audio.session){
   const v=selectedVoice();
   if(v)u.voice=v;
   u.lang=v?.lang||selectedVoiceLanguage();
-  u.rate=Number(speedSelect.value||1);
-  u.pitch=1.06;
+  u.rate=Number(speedSelect.value||0.95);
+  u.pitch=1.0;
   u.volume=1;
 
   u.onstart=()=>{
@@ -785,6 +814,10 @@ function speakSentence(index,offset=0,session=audio.session){
 }
 function startSpeech(fromTime=audio.currentTime){
   if(!('speechSynthesis' in window)){audioStateText.textContent='Speech synthesis is unavailable in this browser.';return}
+  if(!selectedVoice()){
+    audioStateText.textContent='This verified voice is unavailable on this device. Choose another available accent/voice.';
+    return;
+  }
 
   // Real resume path: never cancel/recreate while paused.
   if(audio.mode==='paused'){
@@ -949,7 +982,7 @@ function fillPopup(i){
 function pronounce(text){
   if(!('speechSynthesis' in window))return;
   const u=new SpeechSynthesisUtterance(text);const v=selectedVoice();
-  if(v)u.voice=v;u.lang=v?.lang||selectedVoiceLanguage();u.rate=.9;u.pitch=1.04;window.speechSynthesis.speak(u)
+  if(v)u.voice=v;u.lang=v?.lang||selectedVoiceLanguage();u.rate=.92;u.pitch=1.0;window.speechSynthesis.speak(u)
 }
 
 /* Events */
@@ -976,7 +1009,13 @@ speedSelect.addEventListener('change',()=>{
   if(wasActive){audioTimeline.value=String(Math.min(t,audio.total));audioNow.textContent=fmt(Number(audioTimeline.value))}
 });
 voiceSelect.addEventListener('change',()=>{
-  selectedVoiceProfile=voiceSelect.value;
+  const requested=voiceSelect.value;
+  if(!profileAvailability(requested)){
+    refreshVoices();
+    audioStateText.textContent='That verified voice is not available on this device.';
+    return;
+  }
+  selectedVoiceProfile=requested;
   localStorage.setItem('rol_voiceProfile',selectedVoiceProfile);
   voiceName.textContent=`Voice: ${profileStatus(selectedVoiceProfile)}`;
   if(audio.mode!=='idle'){
