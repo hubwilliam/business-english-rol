@@ -278,17 +278,74 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 
 @media(max-width:720px){
   .app{padding:14px 11px 42px}
-  .app-header{align-items:flex-start}
+  .app-header{align-items:flex-start;margin-bottom:12px}
   .brand p{display:none}
-  .toolbar{top:6px;padding:10px}
-  .toolbar-group:last-child{width:100%;justify-content:flex-start}
+
+  /* iPhone: controls stay at the top of the page instead of floating over reading content */
+  .toolbar{
+    position:static;
+    top:auto;
+    z-index:auto;
+    padding:11px;
+    margin-bottom:14px;
+    border-radius:18px;
+    backdrop-filter:none;
+    -webkit-backdrop-filter:none;
+    box-shadow:0 8px 22px rgba(54,68,105,.07);
+  }
+  .toolbar-group{
+    width:100%;
+    align-items:flex-end;
+    gap:8px;
+  }
+  .toolbar-group:first-child{
+    justify-content:space-between;
+  }
+  .toolbar-group:last-child{
+    justify-content:flex-start;
+    border-top:1px solid var(--line);
+    padding-top:9px;
+    margin-top:1px;
+  }
+  .toolbar .field:first-child{
+    flex:1 1 145px;
+  }
+  .toolbar .field:first-child select{
+    width:100%;
+    max-width:210px;
+  }
+  .levels{
+    gap:3px;
+  }
+  .level-btn{
+    min-width:42px;
+    padding:7px 8px;
+  }
+  .soft-btn,.primary-btn{
+    min-height:38px;
+    padding:8px 10px;
+  }
+
   .reader{border-radius:22px;padding:20px 17px}
   .reader-head{grid-template-columns:1fr}
   .rol-clock{text-align:left;width:max-content}
   .article-title{font-size:31px}
   #readingText{font-size:18px;line-height:1.91}
   .timeline{grid-template-columns:39px 1fr 39px}
+
+  /* Background remains decorative but stops reacting to touch while reading */
+  .study-object{transform:none!important}
 }
+@media(min-width:721px) and (max-width:900px) and (hover:none){
+  .toolbar{
+    position:static;
+    top:auto;
+    z-index:auto;
+    backdrop-filter:none;
+    -webkit-backdrop-filter:none;
+  }
+}
+
 </style>
 </head>
 <body data-theme="light">
@@ -434,6 +491,8 @@ let theme=localStorage.getItem('rol_theme')||'light';
 let fontMode=Number(localStorage.getItem('rol_fontMode')||1);
 let showChunks=localStorage.getItem('rol_showChunks')==='true';
 let rolSeconds=0, rolInterval=null, currentPopupWord='';
+let selectedWordElement=null;
+let popupRequestId=0;
 
 let voices=[];
 let preferredVoiceURI=localStorage.getItem('rol_voiceURI')||'';
@@ -487,6 +546,7 @@ function buildWordHtml(lines){
   return `<p>${out.replace(/([.!?])\s/g,'$1<span class="chunk-slash"> /</span> ')}</p>`;
 }
 function render(){
+  closePopup(true);
   localStorage.setItem('rol_day',String(currentDay));
   localStorage.setItem('rol_level',currentLevel);
   stopSpeech(true);
@@ -725,24 +785,53 @@ function positionPopup(x,y){
   if(top+r.height>innerHeight-12)top=innerHeight-r.height-12;
   wordPopup.style.left=`${Math.max(12,left)}px`;wordPopup.style.top=`${Math.max(12,top)}px`
 }
-function closePopup(){wordPopup.style.display='none'}
-async function openWord(word,e){
-  currentPopupWord=word;
+function clearWordSelection(){
+  if(selectedWordElement)selectedWordElement.classList.remove('highlighted');
   document.querySelectorAll('.word.highlighted').forEach(n=>n.classList.remove('highlighted'));
-  document.querySelectorAll(`.word[data-word="${CSS.escape(word)}"]`).forEach(n=>n.classList.add('highlighted'));
+  selectedWordElement=null;
+  currentPopupWord='';
+}
+function closePopup(clearSelection=true){
+  popupRequestId++;
+  wordPopup.style.display='none';
+  if(clearSelection)clearWordSelection();
+}
+async function openWord(word,e){
+  const target=e.currentTarget||e.target;
+
+  // Tapping the currently selected word again toggles it off.
+  if(selectedWordElement===target && wordPopup.style.display==='block'){
+    closePopup(true);
+    return;
+  }
+
+  popupRequestId++;
+  const requestId=popupRequestId;
+  clearWordSelection();
+
+  currentPopupWord=word;
+  selectedWordElement=target;
+  target.classList.add('highlighted');
+
   popupWord.textContent=word;popupIpa.textContent='';popupTags.innerHTML='';popupBody.textContent='Loading…';
   positionPopup(e.clientX||30,e.clientY||70);
 
   const key='rol_dict_'+word;
   try{
     const cached=localStorage.getItem(key);
-    if(cached){fillPopup(JSON.parse(cached));return}
+    if(cached){
+      if(requestId!==popupRequestId)return;
+      fillPopup(JSON.parse(cached));
+      return;
+    }
   }catch(_){}
   try{
     const info=await lookupWord(word);
+    if(requestId!==popupRequestId)return;
     localStorage.setItem(key,JSON.stringify(info));
     fillPopup(info);
   }catch(_){
+    if(requestId!==popupRequestId)return;
     popupBody.innerHTML=`Dictionary lookup is temporarily unavailable for <strong>${esc(word)}</strong>.`
   }
 }
@@ -815,7 +904,12 @@ popupSpeak.addEventListener('click',()=>currentPopupWord&&pronounce(currentPopup
 popupCopy.addEventListener('click',async()=>{
   try{await navigator.clipboard.writeText(`${popupWord.textContent}\n${popupIpa.textContent}\n${popupBody.innerText}`);popupCopy.textContent='Copied';setTimeout(()=>popupCopy.textContent='Copy',1000)}catch(_){}
 });
-document.addEventListener('click',e=>{if(!wordPopup.contains(e.target)&&!e.target.classList?.contains('word'))closePopup()});
+document.addEventListener('click',e=>{
+  if(!wordPopup.contains(e.target)&&!e.target.classList?.contains('word'))closePopup(true)
+});
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape')closePopup(true)
+});
 
 /* soft parallax */
 (function(){
@@ -827,8 +921,9 @@ document.addEventListener('click',e=>{if(!wordPopup.contains(e.target)&&!e.targe
       el.style.transform=`translate3d(${nx*d*220}px,${ny*d*220}px,0)`;
     });
   }
-  addEventListener('mousemove',e=>move(e.clientX,e.clientY),{passive:true});
-  addEventListener('touchmove',e=>{const t=e.touches[0];if(t)move(t.clientX,t.clientY)},{passive:true});
+  if(matchMedia('(hover:hover) and (pointer:fine)').matches){
+    addEventListener('mousemove',e=>move(e.clientX,e.clientY),{passive:true});
+  }
 })();
 
 /* init */
