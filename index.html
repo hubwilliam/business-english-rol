@@ -495,7 +495,7 @@ let selectedWordElement=null;
 let popupRequestId=0;
 
 let voices=[];
-let preferredVoiceURI=localStorage.getItem('rol_voiceURI')||'';
+let selectedVoiceProfile=localStorage.getItem('rol_voiceProfile')||'female-us';
 
 const audio={
   mode:'idle',                 // idle | playing | paused
@@ -576,35 +576,117 @@ function resetRol(){
 }
 
 /* -------------------- speech audio -------------------- */
-function femalePreferredVoice(list){
-  const priority=['Samantha','Ava','Allison','Serena','Karen','Moira','Tessa','Susan','Zoe','Emma','Aria','Jenny','Sonia','Female'];
-  const english=list.filter(v=>(v.lang||'').toLowerCase().startsWith('en'));
-  for(const name of priority){
-    const hit=english.find(v=>v.name.toLowerCase().includes(name.toLowerCase()));
-    if(hit)return hit;
+const VOICE_PROFILES={
+  'female-us':{
+    label:'♀ American',
+    fullLabel:'Female · American English',
+    lang:'en-US',
+    gender:'female',
+    names:['Samantha','Ava','Allison','Susan','Zoe','Joelle','Stephanie','Aria','Jenny','Nicky','Siri Voice 2','Siri Voice 4']
+  },
+  'male-us':{
+    label:'♂ American',
+    fullLabel:'Male · American English',
+    lang:'en-US',
+    gender:'male',
+    names:['Alex','Aaron','Fred','Tom','Evan','Nathan','Reed','Rocko','Siri Voice 1','Siri Voice 3']
+  },
+  'female-uk':{
+    label:'♀ British',
+    fullLabel:'Female · British English',
+    lang:'en-GB',
+    gender:'female',
+    names:['Serena','Kate','Martha','Libby','Sonia','Stephanie','Siri Voice 2','Siri Voice 4']
+  },
+  'male-uk':{
+    label:'♂ British',
+    fullLabel:'Male · British English',
+    lang:'en-GB',
+    gender:'male',
+    names:['Daniel','Arthur','Oliver','George','Ryan','Siri Voice 1','Siri Voice 3']
+  },
+  'female-in':{
+    label:'♀ Indian',
+    fullLabel:'Female · Indian English',
+    lang:'en-IN',
+    gender:'female',
+    names:['Veena','Neerja','Heera','Lekha','Kalpana','Siri Voice 2','Siri Voice 4']
+  },
+  'male-in':{
+    label:'♂ Indian',
+    fullLabel:'Male · Indian English',
+    lang:'en-IN',
+    gender:'male',
+    names:['Rishi','Raj','Narendra','Prabhat','Siri Voice 1','Siri Voice 3']
   }
-  return english[0]||list[0]||null;
+};
+
+function normalizeLang(lang){
+  return String(lang||'').replace('_','-').toLowerCase();
+}
+function localeMatch(voice,lang){
+  return normalizeLang(voice.lang)===normalizeLang(lang);
+}
+function nameScore(voice,names){
+  const n=String(voice.name||'').toLowerCase();
+  const idx=names.findIndex(name=>n.includes(name.toLowerCase()));
+  return idx===-1?999:idx;
+}
+function voiceForProfile(profileKey){
+  const p=VOICE_PROFILES[profileKey]||VOICE_PROFILES['female-us'];
+  const locale=voices.filter(v=>localeMatch(v,p.lang));
+
+  // First preference: known voice names associated with the requested gender/accent.
+  const named=locale
+    .map(v=>({v,score:nameScore(v,p.names)}))
+    .filter(x=>x.score<999)
+    .sort((a,b)=>a.score-b.score);
+  if(named.length)return {voice:named[0].v,exact:true};
+
+  // Browser SpeechSynthesisVoice does not expose gender. If a named match is
+  // unavailable, retain the requested accent and use the closest locale voice.
+  if(locale.length)return {voice:locale[0],exact:false};
+
+  // Last resort: use another English voice, clearly reported as fallback.
+  const english=voices.filter(v=>normalizeLang(v.lang).startsWith('en-'));
+  return {voice:english[0]||voices[0]||null,exact:false};
+}
+function profileStatus(profileKey){
+  const p=VOICE_PROFILES[profileKey]||VOICE_PROFILES['female-us'];
+  const result=voiceForProfile(profileKey);
+  if(!result.voice)return `${p.fullLabel} · unavailable`;
+  return result.exact
+    ? `${p.fullLabel} · ${result.voice.name}`
+    : `${p.fullLabel} · closest available: ${result.voice.name}`;
 }
 function refreshVoices(){
-  if(!('speechSynthesis' in window)){
-    voiceSelect.innerHTML='<option>Unsupported</option>';voiceName.textContent='Voice unavailable';return;
-  }
-  voices=window.speechSynthesis.getVoices().filter(v=>(v.lang||'').toLowerCase().startsWith('en'));
   voiceSelect.innerHTML='';
-  const chosen=voices.find(v=>v.voiceURI===preferredVoiceURI)||femalePreferredVoice(voices);
-  voices.forEach(v=>{
+  Object.entries(VOICE_PROFILES).forEach(([key,p])=>{
     const o=document.createElement('option');
-    o.value=v.voiceURI;o.textContent=`${v.name} · ${v.lang}`;
-    if(chosen&&chosen.voiceURI===v.voiceURI)o.selected=true;
+    o.value=key;
+    o.textContent=p.label;
+    o.selected=key===selectedVoiceProfile;
     voiceSelect.appendChild(o);
   });
-  if(chosen){
-    preferredVoiceURI=chosen.voiceURI;localStorage.setItem('rol_voiceURI',preferredVoiceURI);
-    voiceName.textContent=`Voice: ${chosen.name}`;
-  }else voiceName.textContent='No English voice found';
+
+  if(!('speechSynthesis' in window)){
+    voiceSelect.disabled=true;
+    voiceName.textContent='Voice unavailable';
+    return;
+  }
+
+  voices=window.speechSynthesis.getVoices().filter(v=>normalizeLang(v.lang).startsWith('en-'));
+
+  // Female American English is the default on first use.
+  if(!VOICE_PROFILES[selectedVoiceProfile])selectedVoiceProfile='female-us';
+  voiceSelect.value=selectedVoiceProfile;
+  voiceName.textContent=`Voice: ${profileStatus(selectedVoiceProfile)}`;
 }
 function selectedVoice(){
-  return voices.find(v=>v.voiceURI===voiceSelect.value)||femalePreferredVoice(voices);
+  return voiceForProfile(selectedVoiceProfile).voice;
+}
+function selectedVoiceLanguage(){
+  return (VOICE_PROFILES[selectedVoiceProfile]||VOICE_PROFILES['female-us']).lang;
 }
 function buildAudioModel(){
   const sentences=fullArticleText().replace(/\s+/g,' ').split(/(?<=[.!?])\s+/).map(s=>s.trim()).filter(Boolean);
@@ -663,7 +745,7 @@ function speakSentence(index,offset=0,session=audio.session){
   const u=new SpeechSynthesisUtterance(sentence);
   const v=selectedVoice();
   if(v)u.voice=v;
-  u.lang=v?.lang||'en-US';
+  u.lang=v?.lang||selectedVoiceLanguage();
   u.rate=Number(speedSelect.value||1);
   u.pitch=1.06;
   u.volume=1;
@@ -867,7 +949,7 @@ function fillPopup(i){
 function pronounce(text){
   if(!('speechSynthesis' in window))return;
   const u=new SpeechSynthesisUtterance(text);const v=selectedVoice();
-  if(v)u.voice=v;u.lang=v?.lang||'en-US';u.rate=.9;u.pitch=1.04;window.speechSynthesis.speak(u)
+  if(v)u.voice=v;u.lang=v?.lang||selectedVoiceLanguage();u.rate=.9;u.pitch=1.04;window.speechSynthesis.speak(u)
 }
 
 /* Events */
@@ -894,9 +976,15 @@ speedSelect.addEventListener('change',()=>{
   if(wasActive){audioTimeline.value=String(Math.min(t,audio.total));audioNow.textContent=fmt(Number(audioTimeline.value))}
 });
 voiceSelect.addEventListener('change',()=>{
-  preferredVoiceURI=voiceSelect.value;localStorage.setItem('rol_voiceURI',preferredVoiceURI);
-  const v=selectedVoice();voiceName.textContent=v?`Voice: ${v.name}`:'Voice unavailable';
-  if(audio.mode!=='idle'){const t=Number(audioTimeline.value||0);stopSpeech(true);audioTimeline.value=String(t);audioNow.textContent=fmt(t)}
+  selectedVoiceProfile=voiceSelect.value;
+  localStorage.setItem('rol_voiceProfile',selectedVoiceProfile);
+  voiceName.textContent=`Voice: ${profileStatus(selectedVoiceProfile)}`;
+  if(audio.mode!=='idle'){
+    const t=Number(audioTimeline.value||0);
+    stopSpeech(true);
+    audioTimeline.value=String(t);
+    audioNow.textContent=fmt(t);
+  }
 });
 
 popupClose.addEventListener('click',closePopup);
